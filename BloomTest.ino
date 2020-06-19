@@ -11,27 +11,26 @@ typedef struct {
 	uint32_t k;
 	uint32_t n;
 	uint32_t m;
+	uint32_t s;
 	byte *filt;
-	byte *salt;
-	uint32_t saltsize;
 	} bf_t;
 
-bf_t* bf_init(uint32_t k, uint32_t m, uint32_t saltsize, byte *salt, bf_t *bf) {
+bf_t* bf_init(uint32_t k, uint32_t m, uint32_t s, bf_t *bf) {
 	if (bf == NULL) {
 		bf = (bf_t *)calloc(sizeof(bf_t), 1);
 	}
 	bf->k = k;
 	bf->m = m;
-	bf->saltsize = saltsize;
-	bf->salt = salt;
-	if (bf->salt == NULL && saltsize) {
-		byte *slt = (byte *)calloc(saltsize,1);
-		bf->salt = slt;
-		for (uint32_t i=0; i<saltsize; i++) {
-			slt[i] = random(256);
-		}
+	if (s == 0) {
+		bf->s = esp_random();
+	} else {
+		bf->s = s;
 	}
-	bf->filt = (byte *)calloc(1<<(m-3),1);
+	if (bf->filt == NULL) {
+		bf->filt = (byte *)calloc(1<<(m-3),1);
+	} else {
+		memset(bf->filt, 0, 1<<(m-3));
+	}
 	return bf;
 }
 
@@ -43,7 +42,7 @@ bool _bf_check_set(bf_t *bf, byte *data, uint32_t datasize, bool set) {
 	}
 	byte hash[32];
 	byte offs=32;
-	uint32_t seq = 0;
+	uint32_t seq = bf->s;
 	for (uint32_t i=0 ; i < bf->k ; i++) {
 		if ((offs+need) > 32) {
 			mbedtls_md_context_t ctx;
@@ -53,9 +52,6 @@ bool _bf_check_set(bf_t *bf, byte *data, uint32_t datasize, bool set) {
 			mbedtls_md_starts(&ctx);
 			mbedtls_md_update(&ctx, (const unsigned char *) &seq, 4);
 			mbedtls_md_update(&ctx, (const unsigned char *) data, datasize);
-			if (bf->saltsize) {
-				mbedtls_md_update(&ctx, (const unsigned char *) bf->salt, bf->saltsize);
-			}
 			mbedtls_md_update(&ctx, (const unsigned char *) &seq, 4);
 			mbedtls_md_finish(&ctx, hash);
 			mbedtls_md_free(&ctx);
@@ -103,7 +99,7 @@ bool _bf_check_set(bf_t *bf, byte *data, uint32_t datasize, bool set) {
 // END IMPL
 
 
-#define TEST_HAVE 5000
+#define TEST_HAVE 3500
 #define TEST_LEN 4+random(200)
 
 #define TEST_BUF 65536
@@ -111,7 +107,7 @@ bool _bf_check_set(bf_t *bf, byte *data, uint32_t datasize, bool set) {
 #define TEST_k 16
 #define TEST_m 16
 
-#define TEST_saltsize 32
+#define TEST_s 0
 
 #define NO_TEST_printhex
 
@@ -129,10 +125,10 @@ void setup()
 
 
   // summon bloomfilter
-  bf_t *bf1 = bf_init(TEST_k, TEST_m, TEST_saltsize, NULL, NULL);
-  Serial.println("BLOOM1: k:" + String(TEST_k) + " m:" + String(TEST_m) + " saltsize:" + String(TEST_saltsize));
-  bf_t *bf2 = bf_init(TEST_k, TEST_m, TEST_saltsize, NULL, NULL);
-  Serial.println("BLOOM2: k:" + String(TEST_k) + " m:" + String(TEST_m) + " saltsize:" + String(TEST_saltsize));
+  bf_t *bf1 = bf_init(TEST_k, TEST_m, TEST_s, NULL);
+  Serial.println("BLOOM1: k:" + String(TEST_k) + " m:" + String(TEST_m) + " s:" + String(bf1->s));
+  bf_t *bf2 = bf_init(TEST_k, TEST_m, TEST_s, NULL);
+  Serial.println("BLOOM2: k:" + String(TEST_k) + " m:" + String(TEST_m) + " s:" + String(bf2->s));
 
   // summon random buffer
   byte *rand = (byte *)malloc(TEST_BUF);
@@ -175,47 +171,75 @@ void setup()
   int i = 0;
   uint32_t buf[64];
   uint32_t lastmil = 0;
+  uint32_t st[4];
+	for (int j=0; j<4; j++) {
+		st[j] = 0;
+	}
   while (1) {
 	// check haves every 64k random checks
 	if (!(i & 0xffff)) {
 		if (lastmil > 0) {
 			Serial.println("MILLIS: " + String(millis()-lastmil));
 		}
+#if 0
 		for (int j = 0; j<TEST_HAVE; j++) {
-			Serial.print("rehave:" + String(i) + ":" + String(j));
+			//Serial.print("rehave:" + String(i) + ":" + String(j));
+			Serial.print("=");
 			if (bf_check(bf1,(byte *)&rand[haveo[j]],haves[j])) {
-				Serial.print(" have");
+				Serial.print("h");
+				//Serial.print(" have");
 			} else {
-				Serial.print(" dont");
+				Serial.print("d");
+				//Serial.print(" dont");
 			}
 			if (bf_check(bf2,(byte *)&rand[haveo[j]],haves[j])) {
-				Serial.print("have");
+				Serial.print("h");
+				//Serial.print("have");
 			} else {
-				Serial.print("dont");
+				Serial.print("d");
+				//Serial.print("dont");
 			}
 			Serial.println("");
   		}
+#endif
+		Serial.print("STAT: i:" + String(i)); 
+		for (int j=0; j<4; j++) {
+			Serial.print(" " + String(j) + ":" + String(st[j]));
+			//st[j] = 0;
+		}
+		Serial.println("");
 		lastmil=millis();
 	}
 
 
 	byte sz = TEST_LEN;
-	Serial.print("dont:" + String(i++) + " sz:" + String(sz) + " data:");
+	//Serial.print("dont:" + String(i) + " sz:" + String(sz) + " data:");
+	//Serial.print("?");
 	for (int j=0; j<((sz>>2)+1); j++) {
 		buf[j] = esp_random();
 	}
 
+	byte rc = 0;
 	if (bf_check(bf1,(byte *)buf,sz)) {
-		Serial.print(" have");
+		rc |= 1;
+		//Serial.print("h");
+		//Serial.print(" have");
 	} else {
-		Serial.print(" dont");
+		//Serial.print("d");
+		//Serial.print(" dont");
 	}
 	if (bf_check(bf2,(byte *)buf,sz)) {
-		Serial.print("have");
+		rc |= 2;
+		//Serial.print("h");
+		//Serial.print("have");
 	} else {
-		Serial.print("dont");
+		//Serial.print("d");
+		//Serial.print("dont");
 	}
-	Serial.println("");
+	//Serial.println("");
+	st[rc]++;
+
+	i++;
   }
 }
 
